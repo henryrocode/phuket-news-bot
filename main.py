@@ -13,13 +13,12 @@ from PIL import Image, ImageDraw, ImageFont
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# ====================== КОНФИГУРАЦИИ (GITHUB SECRETS) ======================
+# ====================== КОНФИГУРАЦИИ ======================
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 
 WATERMARK_TEXT = "@phuketinsiderth"
-# В Гитхабе файл хешей лежит в корне репозитория
 HASH_FILE = "phuket_news_asia_hashes.txt"
 
 HEADERS = {
@@ -56,7 +55,6 @@ def process_image(image_url):
         draw = ImageDraw.Draw(img)
         fs = int(img.width * 0.045)
         
-        # Поиск шрифта в системе Linux (GitHub)
         font = None
         for path in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "Arial.ttf"]:
             try:
@@ -81,78 +79,64 @@ def process_image(image_url):
         return None
 
 def is_today(soup):
-    try:
-        pub_tag = soup.find("meta", property="article:published_time")
-        if not pub_tag:
-            pub_tag = soup.find("meta", {"http-equiv": "date"})
-
-        today = datetime.now().strftime("%Y-%m-%d")
-        yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-
-        if pub_tag:
-            date_str = pub_tag.get("content", "").split(" ")[0]
-            if date_str in [today, yesterday]:
-                return True
-
-        page_text = soup.get_text()
-        t_fmt = datetime.now().strftime("%-d %b %Y")
-        y_fmt = (datetime.now() - timedelta(days=1)).strftime("%-d %b %Y")
-
-        if t_fmt in page_text or y_fmt in page_text:
-            return True
-        return False
-    except:
-        return False
+    # Упрощенная проверка: если новость есть на главной, мы её берем (проверка по хэшу отсеет старые)
+    return True 
 
 def fetch_content_data(url):
     try:
         r = requests.get(url, headers=HEADERS, timeout=15, verify=False)
         r.encoding = "utf-8"
         soup = BeautifulSoup(r.text, "html.parser")
-        if not is_today(soup):
-            return None, None, [], url
+        
         title = soup.find("h1").get_text(strip=True) if soup.find("h1") else ""
-        lead = ""
-        meta_desc = soup.find("meta", {"name": "Description"})
-        if meta_desc:
-            lead = meta_desc.get("content", "").strip()
+        
+        # Ищем основной блок текста и все картинки в нем
+        content_div = soup.find("div", {"id": "the_content"}) or soup.find("div", {"class": "news-content"})
+        lead = content_div.get_text(separator=" ", strip=True) if content_div else ""
+
         valid_images = []
+        # Главное фото
         og_img = soup.find("meta", property="og:image")
         if og_img:
             valid_images.append(og_img["content"])
+            
+        # Дополнительные фото из текста
+        if content_div:
+            for img in content_div.find_all("img"):
+                src = img.get("src")
+                if src:
+                    if not src.startswith("http"):
+                        src = BASE_URL + "/" + src.lstrip("/")
+                    if src not in valid_images:
+                        valid_images.append(src)
+                        
         return title, lead, valid_images, url
     except:
         return None, None, [], url
 
 def generate_post(title, content):
-    # Промпт для профессионального редактора
     prompt = f"""
-Ты — главный редактор крупного русскоязычного медиа на Пхукете. Твоя задача — сделать качественный пересказ новости.
+Ты — главный редактор медиа на Пхукете. Сделай пост для Telegram.
 
 ДАННЫЕ:
-Заголовок: {title}
-Текст: {content}
+Title: {title}
+Content: {content}
 
-ПРАВИЛА (СТРОГО):
-1. ПЕРЕСКАЗЫВАЙ СМЫСЛ, А НЕ ПЕРЕВОДИ СЛОВА. Используй современный, живой русский язык.
-2. ТЕРМИНЫ: "Автомобилисты/Водители" (вместо Мотористы), "Госпиталь/Больница" (вместо Хоспиталь).
-3. ГРАММАТИКА: Строго "на Пхукете", "на Патонге", "на Раваи".
-4. ОТСТУП: Между русской и английской версиями ОБЯЗАТЕЛЬНО должна быть одна пустая строка.
+ЗАДАЧА:
+1. Переведи заголовок на РУССКИЙ (КАПСОМ).
+2. Напиши краткий пересказ на РУССКОМ (1 абзац).
+3. Оставь оригинальный заголовок на АНГЛИЙСКОМ (КАПСОМ).
+4. Оставь оригинальный текст на АНГЛИЙСКОМ (кратко).
 
-СТРУКТУРА:
-- Русская версия (эмодзи + ЗАГОЛОВК КАПСОМ + один плотный абзац текста).
-- ПУСТАЯ СТРОКА.
-- Английская версия (эмодзи + ЗАГОЛОВК КАПСОМ + один плотный абзац текста).
-- В самом конце 6-8 английских хештегов.
-
-ЗАПРЕТ: Не пиши никаких вступлений, извинений или фраз "Вот ваш пост". Только готовый текст для Telegram.
-
-РЕЗУЛЬТАТ:
+ПРАВИЛА:
+- Между русским и английским блоком — ПУСТАЯ СТРОКА.
+- В конце 6 хештегов.
+- Только "на Пхукете", "на Патонге".
 """
     data = {
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.5, 
+        "temperature": 0.4,
     }
     try:
         r = requests.post(
@@ -162,73 +146,57 @@ def generate_post(title, content):
             timeout=30,
         )
         return r.json()["choices"][0]["message"]["content"].strip()
-    except Exception as e:
-        print(f"Ошибка Groq: {e}")
+    except:
         return None
 
 def main():
-    print(f"🚀 Запуск проверки: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    
+    print(f"🚀 Старт: {datetime.now()}")
     if not all([GROQ_API_KEY, TELEGRAM_TOKEN, CHAT_ID]):
-        print("❌ Ошибка: Ключи API не найдены в Secrets!")
         return
 
-    try:
-        posted_hashes = get_hashes()
-        r = requests.get(TARGET_SOURCE, headers=HEADERS, timeout=15, verify=False)
-        r.encoding = "utf-8"
-        soup = BeautifulSoup(r.text, "html.parser")
+    posted_hashes = get_hashes()
+    r = requests.get(TARGET_SOURCE, headers=HEADERS, timeout=15, verify=False)
+    soup = BeautifulSoup(r.text, "html.parser")
 
-        links = [
-            BASE_URL + "/" + a["href"].lstrip("/")
-            for a in soup.find_all("a", href=True)
-            if re.search(r"-\d+\.php$", a["href"])
-            and "news-phuket.php" not in a["href"]
-        ]
+    links = []
+    for a in soup.find_all("a", href=True):
+        if re.search(r"-\d+\.php$", a["href"]) and "news-phuket" not in a["href"]:
+            full_url = BASE_URL + "/" + a["href"].lstrip("/")
+            if full_url not in links:
+                links.append(full_url)
 
-        found_any = False
-        for url in list(set(links)):
-            h = hashlib.md5(url.encode()).hexdigest()
-            if h in posted_hashes:
-                continue
+    found = False
+    for url in links[:5]: # Проверяем последние 5 ссылок
+        h = hashlib.md5(url.encode()).hexdigest()
+        if h in posted_hashes:
+            continue
 
-            print(f"🔎 Обработка: {url}")
-            title, text, images, source_url = fetch_content_data(url)
+        title, text, images, source_url = fetch_content_data(url)
+        if title and images:
+            post_body = generate_post(title, text)
+            if post_body:
+                final_caption = f"{post_body}\n\n📍 <a href='{source_url}'>Источник / Source</a>"
+                media = []
+                for i, img_url in enumerate(images[:9]):
+                    p = process_image(img_url)
+                    if p:
+                        item = {"type": "photo", "media": f"attach://p{i}"}
+                        if len(media) == 0:
+                            item.update({"caption": final_caption, "parse_mode": "HTML"})
+                        media.append((f"p{i}", p, item))
 
-            if title and images:
-                post_body = generate_post(title, text)
-                if post_body:
-                    final_caption = f"{post_body}\n\n📍 <a href='{source_url}'>Источник / Source</a>"
-                    
-                    media = []
-                    for i, img_url in enumerate(images[:9]):
-                        p = process_image(img_url)
-                        if p:
-                            item = {"type": "photo", "media": f"attach://p{i}"}
-                            if i == 0:
-                                item.update({"caption": final_caption, "parse_mode": "HTML"})
-                            media.append((f"p{i}", p, item))
-
-                    if media:
-                        t_api = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMediaGroup"
-                        files = {m[0]: m[1] for m in media}
-                        media_json = [m[2] for m in media]
-                        resp = requests.post(
-                            t_api,
-                            data={"chat_id": CHAT_ID, "media": json.dumps(media_json)},
-                            files=files,
-                        )
-                        if resp.status_code == 200:
-                            save_hash(h)
-                            print(f"✅ Опубликовано: {title}")
-                            found_any = True
-                            time.sleep(5)
-
-        if not found_any:
-            print("😴 Новых новостей нет.")
-
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
+                if media:
+                    requests.post(
+                        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMediaGroup",
+                        data={"chat_id": CHAT_ID, "media": json.dumps([m[2] for m in media])},
+                        files={m[0]: m[1] for m in media}
+                    )
+                    save_hash(h)
+                    print(f"✅ Готово: {title}")
+                    found = True
+                    time.sleep(5)
+    if not found:
+        print("😴 Нового нет.")
 
 if __name__ == "__main__":
     main()
