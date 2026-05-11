@@ -115,7 +115,7 @@ def fetch_content_data(url):
         return None, None, [], url
 
 def generate_post(title, content):
-        prompt = f"""
+    prompt = f"""
 Ты — ведущий репортер криминальной хроники на Пхукете. Твоя задача: написать подробный и точный пост для Telegram.
 
 ДАННЫЕ ДЛЯ ОБРАБОТКИ:
@@ -139,15 +139,15 @@ def generate_post(title, content):
 
 [Эмодзи] ORIGINAL ENGLISH TITLE (CAPS)
 Brief English summary (1-2 sentences).
-
 """
-
 
     data = {
         "model": "llama-3.3-70b-versatile",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.4,
     }
+    return data
+
     try:
         r = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
