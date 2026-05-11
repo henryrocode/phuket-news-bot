@@ -146,7 +146,7 @@ Brief English summary (1-2 sentences).
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.4,
     }
-    return data
+
 
     try:
         r = requests.post(
